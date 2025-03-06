@@ -6,45 +6,61 @@ function Set-ExplorerSettings {
         Write-Host "`nConfiguring Windows Explorer Settings" -ForegroundColor Cyan
         Write-Host "--------------------------------" -ForegroundColor Cyan
 
-        # Show file extensions
-        if ($PSCmdlet.ShouldProcess("Show file extensions", "Configure Explorer")) {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0
-            Write-Host "Enabled showing file extensions" -ForegroundColor Green
+        $changes = @()
+        $explorerKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+        $currentSettings = Get-ItemProperty -Path $explorerKey
+
+        # Check file extensions setting
+        if ($currentSettings.HideFileExt -ne 0) {
+            $changes += "Show file extensions"
+            if (-not $WhatIf -and $PSCmdlet.ShouldProcess("Show file extensions", "Configure Explorer")) {
+                Set-ItemProperty -Path $explorerKey -Name "HideFileExt" -Value 0
+            }
         }
 
-        # Show hidden files
-        if ($PSCmdlet.ShouldProcess("Show hidden files", "Configure Explorer")) {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -Value 1
-            Write-Host "Enabled showing hidden files" -ForegroundColor Green
+        # Check hidden files setting
+        if ($currentSettings.Hidden -ne 1) {
+            $changes += "Show hidden files"
+            if (-not $WhatIf -and $PSCmdlet.ShouldProcess("Show hidden files", "Configure Explorer")) {
+                Set-ItemProperty -Path $explorerKey -Name "Hidden" -Value 1
+            }
         }
 
-        # Show protected operating system files
-        if ($PSCmdlet.ShouldProcess("Show protected OS files", "Configure Explorer")) {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowSuperHidden" -Value 1
-            Write-Host "Enabled showing protected operating system files" -ForegroundColor Green
+        # Check protected OS files setting
+        if ($currentSettings.ShowSuperHidden -ne 1) {
+            $changes += "Show protected operating system files"
+            if (-not $WhatIf -and $PSCmdlet.ShouldProcess("Show protected OS files", "Configure Explorer")) {
+                Set-ItemProperty -Path $explorerKey -Name "ShowSuperHidden" -Value 1
+            }
         }
 
-        # Expand Explorer to current folder
-        if ($PSCmdlet.ShouldProcess("Expand to current folder", "Configure Explorer")) {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "NavPaneExpandToCurrentFolder" -Value 1
-            Write-Host "Enabled expanding Explorer to current folder" -ForegroundColor Green
+        # Check expand to current folder setting
+        if ($currentSettings.NavPaneExpandToCurrentFolder -ne 1) {
+            $changes += "Enable expanding Explorer to current folder"
+            if (-not $WhatIf -and $PSCmdlet.ShouldProcess("Expand to current folder", "Configure Explorer")) {
+                Set-ItemProperty -Path $explorerKey -Name "NavPaneExpandToCurrentFolder" -Value 1
+            }
         }
 
-        # Show all folders in Explorer navigation pane
-        if ($PSCmdlet.ShouldProcess("Show all folders", "Configure Explorer")) {
-            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "NavPaneShowAllFolders" -Value 1
-            Write-Host "Enabled showing all folders in navigation pane" -ForegroundColor Green
+        # Check show all folders setting
+        if ($currentSettings.NavPaneShowAllFolders -ne 1) {
+            $changes += "Show all folders in navigation pane"
+            if (-not $WhatIf -and $PSCmdlet.ShouldProcess("Show all folders", "Configure Explorer")) {
+                Set-ItemProperty -Path $explorerKey -Name "NavPaneShowAllFolders" -Value 1
+            }
         }
 
-        # Restart Explorer to apply changes
-        if ($PSCmdlet.ShouldProcess("Restart Explorer", "Apply changes")) {
+        # Only restart Explorer if changes were made
+        if ($changes.Count -gt 0 -and -not $WhatIf -and $PSCmdlet.ShouldProcess("Restart Explorer", "Apply changes")) {
             Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
             Start-Process "explorer" -ErrorAction SilentlyContinue
-            Write-Host "Restarted Explorer to apply changes" -ForegroundColor Green
         }
+
+        return $changes
     }
     catch {
         Write-Error "Failed to configure Explorer settings: $_"
+        return @("Failed to configure Explorer settings: $_")
     }
 }
 

@@ -1,9 +1,12 @@
 function Get-TerminalSettings {
     param (
-        [string]$ConfigPath = "..\config\settings.json"
+        [string]$ConfigPath = (Join-Path $PSScriptRoot "..\config\settings.json")
     )
     
     try {
+        if (-not (Test-Path $ConfigPath)) {
+            throw "Configuration file not found at: $ConfigPath"
+        }
         $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
         return $config.terminal
     }
@@ -133,26 +136,26 @@ function Set-CustomPrompt {
         $prompt = "`n"
 
         if ($ShowCurrentDirectory) {
-            $prompt += "📂 $curPath`n"
+            $prompt += "[DIR] $curPath`n"
         }
 
         if ($ShowGitStatus -and (Get-Command git -ErrorAction SilentlyContinue)) {
             $gitBranch = git branch --show-current 2>$null
             if ($gitBranch) {
-                $prompt += "🌿 $gitBranch "
+                $prompt += "[GIT] $gitBranch "
                 $gitStatus = git status --porcelain 2>$null
                 if ($gitStatus) {
-                    $prompt += "📝"
+                    $prompt += "*"
                 }
                 $prompt += "`n"
             }
         }
 
         if ($ShowExecutionTime) {
-            $prompt += "⏰ $(Get-Date -Format "HH:mm:ss")`n"
+            $prompt += "[$(Get-Date -Format "HH:mm:ss")]`n"
         }
 
-        $prompt += "➜ "
+        $prompt += "> "
         $LASTEXITCODE = $origLastExitCode
         return $prompt
     }
@@ -171,23 +174,81 @@ function Set-TerminalConfiguration {
     Write-Host "`nConfiguring Terminal Settings" -ForegroundColor Cyan
     Write-Host "--------------------------" -ForegroundColor Cyan
 
-    if ($PSCmdlet.ShouldProcess("Terminal font", "Set terminal font settings")) {
-        Set-TerminalFont -FontName $config.font.name -FontSize $config.font.size
+    # Check current Windows Terminal settings
+    $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    $changes = @()
+    
+    if (Test-Path $wtSettingsPath) {
+        $wtSettings = Get-Content -Path $wtSettingsPath -Raw | ConvertFrom-Json
+        
+        # Check font settings
+        if ($PSCmdlet.ShouldProcess("Terminal font", "Set terminal font settings")) {
+            $currentFont = $wtSettings.profiles.defaults.font.face
+            $currentSize = $wtSettings.profiles.defaults.font.size
+            
+            if ($currentFont -ne $config.font.name -or $currentSize -ne $config.font.size) {
+                $changes += "Update font to $($config.font.name) (size: $($config.font.size))"
+                if (-not $WhatIf) {
+                    Set-TerminalFont -FontName $config.font.name -FontSize $config.font.size
+                }
+            }
+        }
+
+        # Check color settings
+        if ($PSCmdlet.ShouldProcess("Terminal colors", "Set terminal color scheme")) {
+            $currentBg = $wtSettings.profiles.defaults.background
+            $currentFg = $wtSettings.profiles.defaults.foreground
+            $currentCursor = $wtSettings.profiles.defaults.cursorColor
+            
+            if ($currentBg -ne $config.colorScheme.background -or 
+                $currentFg -ne $config.colorScheme.foreground -or 
+                $currentCursor -ne $config.colorScheme.cursor) {
+                $changes += "Update color scheme (Background: $($config.colorScheme.background), Foreground: $($config.colorScheme.foreground))"
+                if (-not $WhatIf) {
+                    Set-TerminalColors -Background $config.colorScheme.background `
+                                     -Foreground $config.colorScheme.foreground `
+                                     -Cursor $config.colorScheme.cursor
+                }
+            }
+        }
+    } else {
+        $changes += "Windows Terminal settings file not found - will create with default settings"
     }
 
-    if ($PSCmdlet.ShouldProcess("Terminal colors", "Set terminal color scheme")) {
-        Set-TerminalColors -Background $config.colorScheme.background `
-                         -Foreground $config.colorScheme.foreground `
-                         -Cursor $config.colorScheme.cursor
-    }
-
+    # Check prompt settings
     if ($PSCmdlet.ShouldProcess("Terminal prompt", "Configure custom prompt")) {
-        Set-CustomPrompt -ShowGitStatus $config.prompt.showGitStatus `
-                        -ShowExecutionTime $config.prompt.showExecutionTime `
-                        -ShowCurrentDirectory $config.prompt.showCurrentDirectory `
-                        -UseOhMyPosh $config.prompt.useOhMyPosh `
-                        -OhMyPoshTheme $config.prompt.ohMyPoshTheme
+        $promptChanged = $false
+        
+        if ($config.prompt.useOhMyPosh) {
+            if (-not (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) {
+                $changes += "Install Oh My Posh"
+                $promptChanged = $true
+            } elseif (-not (Test-Path $PROFILE) -or -not (Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue | Select-String -Pattern "oh-my-posh init")) {
+                $changes += "Configure Oh My Posh with theme: $($config.prompt.ohMyPoshTheme)"
+                $promptChanged = $true
+            }
+        } else {
+            # Check if current prompt matches desired configuration
+            $currentPrompt = Get-Content Function:\prompt -ErrorAction SilentlyContinue
+            if (-not $currentPrompt -or 
+                ($config.prompt.showGitStatus -and -not ($currentPrompt.ToString() -match '\[GIT\]')) -or
+                ($config.prompt.showExecutionTime -and -not ($currentPrompt.ToString() -match '\[\$\(Get-Date')) -or
+                ($config.prompt.showCurrentDirectory -and -not ($currentPrompt.ToString() -match '\[DIR\]'))) {
+                $changes += "Update custom prompt configuration"
+                $promptChanged = $true
+            }
+        }
+
+        if ($promptChanged -and -not $WhatIf) {
+            Set-CustomPrompt -ShowGitStatus $config.prompt.showGitStatus `
+                           -ShowExecutionTime $config.prompt.showExecutionTime `
+                           -ShowCurrentDirectory $config.prompt.showCurrentDirectory `
+                           -UseOhMyPosh $config.prompt.useOhMyPosh `
+                           -OhMyPoshTheme $config.prompt.ohMyPoshTheme
+        }
     }
+
+    return $changes
 }
 
 Export-ModuleMember -Function Set-TerminalConfiguration 

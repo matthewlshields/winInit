@@ -1,9 +1,12 @@
 function Get-SoftwareSettings {
     param (
-        [string]$ConfigPath = "..\config\settings.json"
+        [string]$ConfigPath = (Join-Path $PSScriptRoot "..\config\settings.json")
     )
     
     try {
+        if (-not (Test-Path $ConfigPath)) {
+            throw "Configuration file not found at: $ConfigPath"
+        }
         $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
         return $config.software
     }
@@ -51,6 +54,7 @@ function Install-PackageManagers {
 }
 
 function Install-Application {
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param (
         [Parameter(Mandatory=$true)]
         [string]$Name,
@@ -59,6 +63,10 @@ function Install-Application {
         [Parameter(Mandatory=$true)]
         [string]$Source
     )
+
+    if (-not $PSCmdlet.ShouldProcess($Name, "Install application")) {
+        return "Would install $Name via $Source"
+    }
 
     Write-Host "Installing $Name..." -ForegroundColor Yellow
     try {
@@ -94,11 +102,13 @@ function Install-Application {
         }
     }
     catch {
-        Write-Error "Failed to install $Name: $_"
+        $errorMessage = $_.Exception.Message
+        Write-Error "Failed to install $Name. Error: $errorMessage"
     }
 }
 
 function Install-VSCodeExtensions {
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param (
         [Parameter(Mandatory=$true)]
         [array]$Extensions
@@ -117,6 +127,16 @@ function Install-VSCodeExtensions {
     }
 
     foreach ($extension in $Extensions) {
+        if (-not $PSCmdlet.ShouldProcess($extension.name, "Install VS Code extension")) {
+            if ($vscodePath) {
+                Write-Output "Would install $($extension.name) for VS Code"
+            }
+            if ($cursorPath) {
+                Write-Output "Would install $($extension.name) for Cursor"
+            }
+            continue
+        }
+
         Write-Host "Installing extension: $($extension.name)..." -ForegroundColor Yellow
         try {
             # Install for VS Code if present
@@ -125,7 +145,7 @@ function Install-VSCodeExtensions {
                 Write-Host "Installed $($extension.name) for VS Code" -ForegroundColor Green
             }
 
-            # Install for Cursor if present (Cursor uses the same extension marketplace as VS Code)
+            # Install for Cursor if present
             if ($cursorPath) {
                 & cursor --install-extension $extension.id --force
                 Write-Host "Installed $($extension.name) for Cursor" -ForegroundColor Green
@@ -147,22 +167,85 @@ function Install-RequiredSoftware {
     Write-Host "`nInstalling Required Software" -ForegroundColor Cyan
     Write-Host "-------------------------" -ForegroundColor Cyan
 
-    # Install package managers
-    if ($PSCmdlet.ShouldProcess("Package managers", "Install package managers")) {
-        Install-PackageManagers -PackageManagers $config.packageManagers
-    }
+    $changes = @()
 
-    # Install applications
-    foreach ($app in $config.applications) {
-        if ($PSCmdlet.ShouldProcess($app.name, "Install application")) {
-            Install-Application -Name $app.name -Id $app.id -Source $app.source
+    # Check package managers
+    foreach ($pm in $config.packageManagers) {
+        switch ($pm.ToLower()) {
+            "chocolatey" {
+                if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+                    if ($PSCmdlet.ShouldProcess("Chocolatey", "Install package manager")) {
+                        $changes += "Install Chocolatey package manager"
+                    }
+                }
+            }
+            "winget" {
+                if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+                    $changes += "Install Winget package manager (via Microsoft Store - App Installer)"
+                }
+            }
         }
     }
 
-    # Install VS Code extensions
-    if ($config.vscodeExtensions -and $PSCmdlet.ShouldProcess("VS Code extensions", "Install extensions")) {
-        Install-VSCodeExtensions -Extensions $config.vscodeExtensions
+    # Check applications
+    foreach ($app in $config.applications) {
+        $installed = $false
+        switch ($app.source.ToLower()) {
+            "winget" {
+                if (Get-Command winget -ErrorAction SilentlyContinue) {
+                    $result = winget list --id $app.id 2>&1
+                    $installed = $result -match $app.id
+                }
+            }
+            "chocolatey" {
+                if (Get-Command choco -ErrorAction SilentlyContinue) {
+                    $result = choco list --local-only --exact $app.id
+                    $installed = $result -match $app.id
+                }
+            }
+        }
+
+        if (-not $installed) {
+            $changes += "Install $($app.name) via $($app.source)"
+            if ($PSCmdlet.ShouldProcess($app.name, "Install application")) {
+                Install-Application -Name $app.name -Id $app.id -Source $app.source
+            }
+        }
     }
+
+    # Check VS Code extensions
+    if ($config.vscodeExtensions) {
+        $vscodePath = Get-Command "code" -ErrorAction SilentlyContinue
+        $cursorPath = Get-Command "cursor" -ErrorAction SilentlyContinue
+
+        if ($vscodePath -or $cursorPath) {
+            foreach ($extension in $config.vscodeExtensions) {
+                $installed = $false
+                
+                if ($vscodePath) {
+                    $result = code --list-extensions 2>$null
+                    $installed = $installed -or ($result -contains $extension.id)
+                }
+                
+                if ($cursorPath) {
+                    $result = cursor --list-extensions 2>$null
+                    $installed = $installed -or ($result -contains $extension.id)
+                }
+
+                if (-not $installed) {
+                    $changes += "Install VS Code/Cursor extension: $($extension.name)"
+                    if ($PSCmdlet.ShouldProcess($extension.name, "Install VS Code extension")) {
+                        Install-VSCodeExtensions -Extensions @($extension)
+                    }
+                }
+            }
+        }
+        else {
+            $changes += "Install VS Code or Cursor IDE"
+        }
+    }
+
+    return $changes
 }
 
 Export-ModuleMember -Function Install-RequiredSoftware 

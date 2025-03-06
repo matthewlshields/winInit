@@ -1,9 +1,12 @@
 function Get-1PasswordSettings {
     param (
-        [string]$ConfigPath = "..\config\settings.json"
+        [string]$ConfigPath = (Join-Path $PSScriptRoot "..\config\settings.json")
     )
     
     try {
+        if (-not (Test-Path $ConfigPath)) {
+            throw "Configuration file not found at: $ConfigPath"
+        }
         $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
         return $config.'1password'
     }

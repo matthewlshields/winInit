@@ -1,14 +1,18 @@
 function Get-GitHubSettings {
     param (
-        [string]$ConfigPath = "..\config\settings.json"
+        [string]$ConfigPath = (Join-Path $PSScriptRoot "..\config\settings.json")
     )
     
     try {
+        if (-not (Test-Path $ConfigPath)) {
+            throw "Configuration file not found at: $ConfigPath"
+        }
         $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
         return $config.github
     }
     catch {
-        Write-Error "Failed to load GitHub configuration: $_"
+        $errorMessage = $_.Exception.Message
+        Write-Error "Failed to load GitHub configuration: $errorMessage"
         return $null
     }
 }
@@ -44,23 +48,44 @@ function New-SSHKey {
             # Generate SSH key if it doesn't exist
             if (-not (Test-Path $keyPath)) {
                 $email = Read-Host "Enter your GitHub email address"
-                ssh-keygen -t $KeyType -f $keyPath -C $email -N '""'
+                $result = ssh-keygen -t $KeyType -f $keyPath -C $email -N '""'
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to generate SSH key. Exit code: $LASTEXITCODE"
+                }
                 Write-Host "Generated new SSH key" -ForegroundColor Green
 
                 # Start ssh-agent and add the key
-                Start-Service ssh-agent
-                ssh-add $keyPath
-                Write-Host "Added SSH key to ssh-agent" -ForegroundColor Green
+                $agentService = Get-Service -Name "ssh-agent" -ErrorAction SilentlyContinue
+                if ($agentService) {
+                    Start-Service ssh-agent
+                    $result = ssh-add $keyPath
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Warning "Failed to add key to ssh-agent. Exit code: $LASTEXITCODE"
+                    }
+                    else {
+                        Write-Host "Added SSH key to ssh-agent" -ForegroundColor Green
+                    }
+                }
+                else {
+                    Write-Warning "ssh-agent service not found. Key will need to be added manually."
+                }
 
                 # Display the public key
-                $publicKey = Get-Content "$keyPath.pub"
-                Write-Host "`nYour public SSH key (copy this to GitHub):`n" -ForegroundColor Yellow
-                Write-Host $publicKey -ForegroundColor Cyan
-                Write-Host "`nAdd this key to your GitHub account at: https://github.com/settings/keys" -ForegroundColor Yellow
+                if (Test-Path "$keyPath.pub") {
+                    $publicKey = Get-Content "$keyPath.pub"
+                    Write-Host "`nYour public SSH key (copy this to GitHub):`n" -ForegroundColor Yellow
+                    Write-Host $publicKey -ForegroundColor Cyan
+                    Write-Host "`nAdd this key to your GitHub account at: https://github.com/settings/keys" -ForegroundColor Yellow
 
-                # Copy to clipboard
-                Set-Clipboard -Value $publicKey
-                Write-Host "Public key has been copied to clipboard" -ForegroundColor Green
+                    # Copy to clipboard
+                    if (Get-Command Set-Clipboard -ErrorAction SilentlyContinue) {
+                        Set-Clipboard -Value $publicKey
+                        Write-Host "Public key has been copied to clipboard" -ForegroundColor Green
+                    }
+                }
+                else {
+                    Write-Warning "Public key file not found at: $keyPath.pub"
+                }
             }
             else {
                 Write-Host "SSH key already exists at $keyPath" -ForegroundColor Yellow
@@ -68,7 +93,8 @@ function New-SSHKey {
         }
     }
     catch {
-        Write-Error "Failed to generate/import SSH key: $_"
+        $errorMessage = $_.Exception.Message
+        Write-Error "Failed to generate/import SSH key: $errorMessage"
     }
 }
 
@@ -80,11 +106,8 @@ function Set-GPGConfiguration {
 
     try {
         # Check if GPG is installed
-        if (-not (Get-Command gpg -ErrorAction SilentlyContinue)) {
-            Write-Error "GPG is not installed. Please install it first."
-            return $false
-        }
-
+        $gpg = Get-Command gpg -ErrorAction Stop
+        
         if ($OnePasswordItem) {
             # Import GPG key from 1Password
             $result = Import-1PasswordGPGKey -ItemName $OnePasswordItem
@@ -102,11 +125,11 @@ function Set-GPGConfiguration {
             }
 
             # Get the first key ID
-            $keyId = ($keys | Select-String -Pattern "sec.*?/(\w+)" | Select-Object -First 1).Matches.Groups[1].Value
-            if (-not $keyId) {
-                Write-Error "Could not find GPG key ID"
-                return $false
+            $keyMatch = $keys | Select-String -Pattern "sec.*?/(\w+)" | Select-Object -First 1
+            if (-not $keyMatch -or -not $keyMatch.Matches -or -not $keyMatch.Matches[0].Groups[1].Value) {
+                throw "Could not find GPG key ID"
             }
+            $keyId = $keyMatch.Matches[0].Groups[1].Value
 
             # Configure Git to use this key
             git config --global user.signingkey $keyId
@@ -114,15 +137,14 @@ function Set-GPGConfiguration {
         }
 
         # Configure GPG to work with Git
-        $gpgPath = (Get-Command gpg).Source
-        git config --global gpg.program $gpgPath
+        git config --global gpg.program $gpg.Source
 
         # Enable commit and tag signing by default
         git config --global commit.gpgsign true
         git config --global tag.gpgsign true
 
-        # Add GPG instructions to Git commit template if not already present
-        $templatePath = [System.IO.Path]::Combine($env:USERPROFILE, ".gitmessage")
+        # Add GPG instructions to Git commit template
+        $templatePath = Join-Path $env:USERPROFILE ".gitmessage"
         if (-not (Test-Path $templatePath)) {
             @"
 
@@ -140,7 +162,8 @@ function Set-GPGConfiguration {
         return $true
     }
     catch {
-        Write-Error "Failed to configure GPG: $_"
+        $errorMessage = $_.Exception.Message
+        Write-Error "Failed to configure GPG: $errorMessage"
         return $false
     }
 }
@@ -228,6 +251,82 @@ function Initialize-GitHubCLI {
     }
 }
 
+function Test-Dependencies {
+    param (
+        [Parameter(Mandatory=$true)]
+        [hashtable]$Config
+    )
+
+    $dependencies = @{
+        "Git" = @{
+            Required = $true
+            Command = "git"
+            InstallCommand = "winget install Git.Git"
+        }
+        "GPG" = @{
+            Required = $Config.gitConfig."commit.gpgsign" -eq "true"
+            Command = "gpg"
+            InstallCommand = "winget install GnuPG.GnuPG"
+        }
+        "SSH" = @{
+            Required = $true
+            Command = "ssh"
+            InstallCommand = "Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0"
+        }
+        "GitHub CLI" = @{
+            Required = $false
+            Command = "gh"
+            InstallCommand = "winget install GitHub.cli"
+        }
+        "1Password CLI" = @{
+            Required = $Config.use1Password
+            Command = "op"
+            InstallCommand = "winget install AgileBits.1Password.CLI"
+        }
+    }
+
+    $missingDeps = @()
+    foreach ($dep in $dependencies.Keys) {
+        $info = $dependencies[$dep]
+        if (-not (Get-Command $info.Command -ErrorAction SilentlyContinue)) {
+            if ($info.Required) {
+                $missingDeps += @{
+                    Name = $dep
+                    InstallCommand = $info.InstallCommand
+                }
+            } else {
+                Write-Host "Optional dependency $dep is not installed." -ForegroundColor Yellow
+                Write-Host "To install, run: $($info.InstallCommand)" -ForegroundColor Yellow
+                Write-Host
+            }
+        }
+    }
+
+    if ($missingDeps.Count -gt 0) {
+        Write-Host "`nMissing required dependencies:" -ForegroundColor Red
+        foreach ($dep in $missingDeps) {
+            Write-Host "- $($dep.Name)" -ForegroundColor Red
+            Write-Host "  To install, run: $($dep.InstallCommand)" -ForegroundColor Yellow
+        }
+        Write-Host "`nPlease install the required dependencies and run the script again." -ForegroundColor Red
+        return $false
+    }
+
+    # Check SSH agent service
+    $sshAgent = Get-Service -Name "ssh-agent" -ErrorAction SilentlyContinue
+    if (-not $sshAgent) {
+        Write-Host "SSH agent service is not installed." -ForegroundColor Yellow
+        Write-Host "To install, run: Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0" -ForegroundColor Yellow
+        return $false
+    }
+    if ($sshAgent.Status -ne "Running") {
+        Write-Host "Starting SSH agent service..." -ForegroundColor Yellow
+        Start-Service ssh-agent
+    }
+
+    return $true
+}
+
 function Set-GitHubConfiguration {
     [CmdletBinding(SupportsShouldProcess=$true)]
     param()
@@ -235,39 +334,77 @@ function Set-GitHubConfiguration {
     $config = Get-GitHubSettings
     if (-not $config) { return }
 
-    Write-Host "`nConfiguring GitHub Settings" -ForegroundColor Cyan
-    Write-Host "------------------------" -ForegroundColor Cyan
+    Write-Host "`nConfiguring GitHub" -ForegroundColor Cyan
+    Write-Host "----------------" -ForegroundColor Cyan
 
-    # Initialize 1Password if configured
-    $use1Password = $false
-    if ($config.use1Password) {
-        $use1Password = Initialize-1Password
-        if (-not $use1Password) {
-            Write-Host "Falling back to manual configuration..." -ForegroundColor Yellow
+    $changes = @()
+
+    # Check if 1Password CLI is installed
+    if (-not (Get-Command op -ErrorAction SilentlyContinue)) {
+        Write-Host "1Password CLI is not installed. Please install it using: winget install AgileBits.1Password.CLI" -ForegroundColor Yellow
+        return $changes
+    }
+
+    # Check if Git is installed
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "Git is not installed. Please install it first." -ForegroundColor Red
+        return $changes
+    }
+
+    # Configure SSH key signing
+    if ($config.useSSHSigning) {
+        # Verify op-ssh-sign.exe exists
+        $sshSigningProgram = [System.Environment]::ExpandEnvironmentVariables($config.sshSigningProgram)
+        if (-not (Test-Path $sshSigningProgram)) {
+            Write-Error "SSH signing program not found at: $sshSigningProgram"
+            Write-Host "Please ensure 1Password is installed and the path is correct." -ForegroundColor Yellow
+            return $changes
+        }
+
+        # Configure Git with SSH signing
+        foreach ($setting in $config.gitConfig.PSObject.Properties) {
+            $currentValue = git config --global $setting.Name
+            $newValue = [System.Environment]::ExpandEnvironmentVariables($setting.Value)
+            
+            if ($currentValue -ne $newValue) {
+                $changes += "Set Git config: $($setting.Name) = $newValue"
+                if ($PSCmdlet.ShouldProcess("Git config $($setting.Name)", "Set value")) {
+                    git config --global $setting.Name $newValue
+                }
+            }
         }
     }
 
-    # Generate/Import SSH key
-    if ($PSCmdlet.ShouldProcess("SSH key", "Generate/Import SSH key")) {
-        $onePasswordItem = $use1Password ? $config.'1password'.sshKeyItem : $null
-        New-SSHKey -KeyType $config.sshKeyType -KeyPath $config.sshKeyPath -OnePasswordItem $onePasswordItem
+    # Configure GitHub CLI if requested
+    if ($config.useGitHubCLI) {
+        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            $changes += "Install GitHub CLI"
+            if ($PSCmdlet.ShouldProcess("GitHub CLI", "Install")) {
+                winget install GitHub.cli
+            }
+        }
+        else {
+            # Check if already authenticated
+            $authenticated = $false
+            try {
+                $null = gh auth status 2>&1
+                $authenticated = $LASTEXITCODE -eq 0
+            }
+            catch {
+                $authenticated = $false
+            }
+
+            if (-not $authenticated) {
+                $changes += "Authenticate with GitHub CLI"
+                if ($PSCmdlet.ShouldProcess("GitHub CLI", "Authenticate")) {
+                    gh auth login
+                }
+            }
+        }
     }
 
-    # Configure Git
-    if ($config.configureGlobalGit -and $PSCmdlet.ShouldProcess("Git configuration", "Set global Git configuration")) {
-        $onePasswordItem = $use1Password ? $config.'1password'.gitConfigItem : $null
-        Set-GitConfiguration -GitConfig $config.gitConfig -OnePasswordItem $onePasswordItem
-    }
-
-    # Import GPG key if configured
-    if ($use1Password -and $config.'1password'.gpgKeyItem -and $PSCmdlet.ShouldProcess("GPG key", "Import GPG key")) {
-        Import-1PasswordGPGKey -ItemName $config.'1password'.gpgKeyItem
-    }
-
-    # Initialize GitHub CLI
-    if ($PSCmdlet.ShouldProcess("GitHub CLI", "Initialize and authenticate GitHub CLI")) {
-        Initialize-GitHubCLI
-    }
+    return $changes
 }
 
+Export-ModuleMember -Function Set-GitHubConfiguration 
 Export-ModuleMember -Function Set-GitHubConfiguration 

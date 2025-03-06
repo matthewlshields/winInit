@@ -25,25 +25,109 @@ Import-Module (Join-Path $modulePath "SystemSettings.psm1") -Force
 Import-Module (Join-Path $modulePath "GitHub.psm1") -Force
 Import-Module (Join-Path $modulePath "OnePassword.psm1") -Force
 
+function Get-CurrentState {
+    param (
+        [string]$Section
+    )
+
+    $state = @{}
+    
+    switch ($Section) {
+        "FileLocations" {
+            $state = @{
+                "Development Root Exists" = Test-Path $env:DEV_HOME
+                "Projects Root Exists" = Test-Path $env:PROJECTS_HOME
+                "Environment Variables Set" = ($env:DEV_HOME -ne $null -and $env:PROJECTS_HOME -ne $null)
+            }
+        }
+        "Terminal" {
+            $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+            $state = @{
+                "Windows Terminal Settings Exist" = Test-Path $wtSettingsPath
+                "Oh My Posh Installed" = [bool](Get-Command oh-my-posh -ErrorAction SilentlyContinue)
+                "PowerShell Profile Exists" = Test-Path $PROFILE
+            }
+            if (Test-Path $wtSettingsPath) {
+                $wtSettings = Get-Content -Path $wtSettingsPath -Raw | ConvertFrom-Json
+                $state["Current Font"] = $wtSettings.profiles.defaults.font.face
+                $state["Current Font Size"] = $wtSettings.profiles.defaults.font.size
+            }
+        }
+        "Software" {
+            $state = @{
+                "Chocolatey Installed" = [bool](Get-Command choco -ErrorAction SilentlyContinue)
+                "Winget Installed" = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+                "VS Code/Cursor Installed" = [bool]((Get-Command code -ErrorAction SilentlyContinue) -or (Get-Command cursor -ErrorAction SilentlyContinue))
+            }
+        }
+        "Explorer" {
+            $explorerKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+            $state = @{
+                "Show File Extensions" = (Get-ItemProperty -Path $explorerKey).HideFileExt -eq 0
+                "Show Hidden Files" = (Get-ItemProperty -Path $explorerKey).Hidden -eq 1
+                "Show Protected OS Files" = (Get-ItemProperty -Path $explorerKey).ShowSuperHidden -eq 1
+                "Expand to Current Folder" = (Get-ItemProperty -Path $explorerKey).NavPaneExpandToCurrentFolder -eq 1
+                "Show All Folders" = (Get-ItemProperty -Path $explorerKey).NavPaneShowAllFolders -eq 1
+            }
+        }
+        "GitHub" {
+            $state = @{
+                "Git Installed" = [bool](Get-Command git -ErrorAction SilentlyContinue)
+                "GPG Installed" = [bool](Get-Command gpg -ErrorAction SilentlyContinue)
+                "SSH Installed" = [bool](Get-Command ssh -ErrorAction SilentlyContinue)
+                "GitHub CLI Installed" = [bool](Get-Command gh -ErrorAction SilentlyContinue)
+                "1Password CLI Installed" = [bool](Get-Command op -ErrorAction SilentlyContinue)
+                "SSH Agent Running" = [bool]((Get-Service ssh-agent -ErrorAction SilentlyContinue).Status -eq 'Running')
+            }
+            if ($state["Git Installed"]) {
+                $state["Git User Configured"] = [bool](git config --global user.name)
+                $state["Git Email Configured"] = [bool](git config --global user.email)
+                $state["Git Signing Configured"] = [bool](git config --global commit.gpgsign)
+            }
+        }
+    }
+    return $state
+}
+
 function Show-DryRunSummary {
     param (
         [string]$Section,
-        [array]$Changes
+        [array]$Changes,
+        [hashtable]$CurrentState = $null
     )
 
     Write-Host "`n$Section Changes:" -ForegroundColor Cyan
     Write-Host ("-" * ($Section.Length + 9))
+
+    if ($CurrentState) {
+        Write-Host "`nCurrent State:" -ForegroundColor Yellow
+        foreach ($key in $CurrentState.Keys) {
+            $value = $CurrentState[$key]
+            $color = if ($value) { "Green" } else { "Red" }
+            Write-Host "- $key : " -NoNewline
+            Write-Host "$value" -ForegroundColor $color
+        }
+        Write-Host "`nProposed Changes:" -ForegroundColor Yellow
+    }
+
     if ($Changes.Count -eq 0) {
-        Write-Host "No changes would be made" -ForegroundColor Yellow
+        Write-Host "No changes required - current state matches desired state" -ForegroundColor Green
     }
     else {
         foreach ($change in $Changes) {
-            Write-Host "- $change" -ForegroundColor Green
+            Write-Host "- $change" -ForegroundColor White
         }
     }
 }
 
 function Get-ConfigurationSummary {
+    $configPath = Join-Path $PSScriptRoot "config\settings.json"
+    if (-not (Test-Path $configPath)) {
+        Write-Host "`nError: Configuration file not found at: $configPath" -ForegroundColor Red
+        Write-Host "Please ensure the configuration file exists before running the script." -ForegroundColor Yellow
+        exit 1
+    }
+
     $summary = @{
         "File Locations" = @()
         "Terminal Settings" = @()
@@ -54,54 +138,27 @@ function Get-ConfigurationSummary {
 
     # File Locations
     if (-not $SkipFileLocations) {
-        $config = Get-Content -Path "config\settings.json" -Raw | ConvertFrom-Json
-        $summary["File Locations"] = @(
-            "Create development root: $($config.fileLocations.developmentRoot)",
-            "Create default folders: $($config.fileLocations.defaultFolders -join ', ')",
-            "Set environment variables: DEV_HOME, PROJECTS_HOME"
-        )
+        $summary["File Locations"] = Set-FileLocations -WhatIf
     }
 
     # Terminal Settings
     if (-not $SkipTerminal) {
-        $config = Get-Content -Path "config\settings.json" -Raw | ConvertFrom-Json
-        $summary["Terminal Settings"] = @(
-            "Configure font: $($config.terminal.font.name) (size: $($config.terminal.font.size))",
-            "Set color scheme",
-            "Configure prompt with Git status and execution time",
-            "Set up Oh My Posh with theme: $($config.terminal.prompt.ohMyPoshTheme)"
-        )
+        $summary["Terminal Settings"] = Set-TerminalConfiguration -WhatIf
     }
 
     # Software Installation
     if (-not $SkipSoftware) {
-        $config = Get-Content -Path "config\settings.json" -Raw | ConvertFrom-Json
-        $apps = $config.software.applications.name -join ', '
-        $extensions = $config.software.vscodeExtensions.name -join ', '
-        $summary["Software Installation"] = @(
-            "Install applications: $apps",
-            "Install VS Code extensions: $extensions"
-        )
+        $summary["Software Installation"] = Install-RequiredSoftware -WhatIf
     }
 
     # Explorer Settings
     if (-not $SkipExplorer) {
-        $summary["Explorer Settings"] = @(
-            "Show file extensions",
-            "Show hidden files",
-            "Show protected OS files",
-            "Configure navigation pane"
-        )
+        $summary["Explorer Settings"] = Set-ExplorerSettings -WhatIf
     }
 
     # GitHub Configuration
     if (-not $SkipGitHub) {
-        $config = Get-Content -Path "config\settings.json" -Raw | ConvertFrom-Json
-        $summary["GitHub Configuration"] = @(
-            "Configure Git with commit signing",
-            "Set up SSH key",
-            "Configure GitHub CLI"
-        )
+        $summary["GitHub Configuration"] = Set-GitHubConfiguration -WhatIf
     }
 
     return $summary
@@ -175,7 +232,9 @@ function Invoke-Configuration {
         "7" {
             $summary = Get-ConfigurationSummary
             foreach ($section in $summary.Keys) {
-                Show-DryRunSummary -Section $section -Changes $summary[$section]
+                $sectionName = $section -replace " Configuration$", "" -replace " Settings$", "" -replace " Installation$", ""
+                $currentState = Get-CurrentState -Section $sectionName
+                Show-DryRunSummary -Section $section -Changes $summary[$section] -CurrentState $currentState
             }
             Write-Host "`nPress any key to continue..."
             $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -190,10 +249,14 @@ function Invoke-Configuration {
 if ($DryRun) {
     Write-Host "`nDRY RUN MODE - No changes will be made" -ForegroundColor Yellow
     Write-Host "=====================================" -ForegroundColor Yellow
+    
     $summary = Get-ConfigurationSummary
     foreach ($section in $summary.Keys) {
-        Show-DryRunSummary -Section $section -Changes $summary[$section]
+        $sectionName = $section -replace " Configuration$", "" -replace " Settings$", "" -replace " Installation$", ""
+        $currentState = Get-CurrentState -Section $sectionName
+        Show-DryRunSummary -Section $section -Changes $summary[$section] -CurrentState $currentState
     }
+    
     Write-Host "`nThis is a dry run. No changes were made." -ForegroundColor Yellow
     exit
 }
