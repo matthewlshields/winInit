@@ -1,0 +1,133 @@
+{
+    "fileLocations": {
+        "developmentRoot": "C:\\Development",
+        "documentsRoot": "%USERPROFILE%\\Documents",
+        "projectsRoot": "C:\\Development\\Projects",
+        "githubRoot": "C:\\Development\\github.com",
+        "defaultFolders": [
+            "Projects",
+            "GitHub",
+            "Workspace",
+            "Tools"
+        ]
+    },
+    "terminal": {
+        "font": {
+            "name": "CascadiaCode NF",
+            "size": 12
+        },
+        "colorScheme": {
+            "background": "#0C0C0C",
+            "foreground": "#CCCCCC",
+            "cursor": "#FFFFFF"
+        },
+        "prompt": {
+            "showGitStatus": true,
+            "showExecutionTime": true,
+            "showCurrentDirectory": true,
+            "useOhMyPosh": true,
+            "ohMyPoshTheme": "agnoster"
+        }
+    },
+    "software": {
+        "packageManagers": [
+            "winget",
+            "chocolatey"
+        ],
+        "applications": [
+            {
+                "name": "Git",
+                "id": "Git.Git",
+                "source": "winget"
+            },
+            {
+                "name": "Visual Studio Code",
+                "id": "Microsoft.VisualStudioCode",
+                "source": "winget"
+            },
+            {
+                "name": "Windows Terminal",
+                "id": "Microsoft.WindowsTerminal",
+                "source": "winget"
+            },
+            {
+                "name": "Node.js",
+                "id": "OpenJS.NodeJS",
+                "source": "winget"
+            },
+            {
+                "name": "Oh My Posh",
+                "id": "JanDeDobbeleer.OhMyPosh",
+                "source": "winget"
+            },
+            {
+                "name": "Cursor IDE",
+                "id": "Cursor.Cursor",
+                "source": "winget"
+            },
+            {
+                "name": "GitHub CLI",
+                "id": "GitHub.cli",
+                "source": "winget"
+            },
+            {
+                "name": "1Password",
+                "id": "AgileBits.1Password",
+                "source": "winget"
+            },
+            {
+                "name": "1Password CLI",
+                "id": "AgileBits.1Password.CLI",
+                "source": "winget"
+            },
+            {
+                "name": "GPG",
+                "id": "GnuPG.GnuPG",
+                "source": "winget"
+            }
+        ],
+        "vscodeExtensions": [
+            {
+                "name": "indent-rainbow",
+                "id": "oderwat.indent-rainbow"
+            },
+            {
+                "name": "PowerShell",
+                "id": "ms-vscode.powershell"
+            },
+            {
+                "name": "markdownlint",
+                "id": "davidanson.vscode-markdownlint"
+            }
+        ]
+    },
+    "github": {
+        "sshKeyType": "ed25519",
+        "sshKeyPath": "%USERPROFILE%\\.ssh\\id_ed25519",
+        "configureGlobalGit": true,
+        "gitConfig": {
+            "core.autocrlf": "true",
+            "init.defaultBranch": "main",
+            "commit.gpgsign": "true",
+            "gpg.program": "gpg",
+            "tag.gpgsign": "true"
+        },
+        "use1Password": true,
+        "1password": {
+            "sshKeyItem": "GitHub SSH Key",
+            "gpgKeyItem": "GitHub GPG Key",
+            "gitConfigItem": "GitHub Configuration"
+        }
+    },
+    "1password": {
+        "account": "",
+        "service_account_token_item": "Windows Config Service Account",
+        "vault": "Developer",
+        "categories": {
+            "ssh_keys": "SSH Keys",
+            "gpg_keys": "GPG Keys",
+            "git_config": "Developer Config",
+            "environment": "Environment Variables"
+        }
+    }
+} 
